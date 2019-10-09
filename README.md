@@ -1,2 +1,2 @@
 # GiTraTra
-Github traffic tracker
+Github Traffic Tracker
