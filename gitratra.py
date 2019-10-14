@@ -3,6 +3,7 @@ import sys
 from github import Github
 import pickle
 from datetime import datetime
+import getpass
 
 """
   gitratra: query a list of GitHub repositories to store traffic
@@ -169,7 +170,12 @@ def read_repositories_names(repositories_file_path):
 """
 def run_gitratra(token, data_path, repositories_file_path):
   print("Authentification...")
-  g = Github(token)
+  g = None
+  split_token = token.split(":")
+  if (split_token[0] == "token"):
+    g = Github(split_token[1])
+  else:
+    g = Github(split_token[1], getpass.getpass())
   repositories = read_repositories_names(repositories_file_path)
   traffic_data = get_traffic_data(data_path)
   for repo_name in repositories:
@@ -178,11 +184,20 @@ def run_gitratra(token, data_path, repositories_file_path):
   print_summary(traffic_data)
   write_data(traffic_data, data_path)
 
+def print_error_syntax():
+    print("Possible syntaxes:")
+    print("python run_generax.py token:<github_token> <repositories_list_file> <output_file>.")
+    print("python run_generax.py username:<username> <repositories_list_file> <output_file>.")
+
 if (__name__== "__main__"):
   if (len(sys.argv) != 4):
-    print("Syntax error: python run_generax.py auth_token repositories_list_file output_file.")
+    print_error_syntax()
     sys.exit(0)
   token = sys.argv[1]
+  if (len(token.split(":")) != 2):
+    print("ERROR: Invalid token or username string")
+    print_error_syntax()
+    sys.exit(1)
   repositories_file_path = sys.argv[2]
   data_path = sys.argv[3]
   run_gitratra(token, data_path, repositories_file_path)
