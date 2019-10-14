@@ -5,26 +5,38 @@ import pickle
 from datetime import datetime
 
 """
-  Data: dictionary of RepositoryData (key = repository name)
-  RepositoryData: dictionary of TrackedMetrics (key = "clones" or "views")
-  TrackedMetrics: dictionary of [count, uniques] (key = timestamp)
+  gitratra: query a list of GitHub repositories to store traffic
+  information into a file
+
+  Uses the following representation:
+  - TrafficData: dictionary of RepositoryData (key = repository_name)
+  - RepositoryData: dictionary of MetricsData (key = metric_name = "clones" or "views")
+  - MetricsData: dictionary of [count, uniques] (key = timestamp (datetime))
 """
 
-def write_data(data, data_file_path):
+
+"""
+  Write traffic data into a file
+"""
+def write_data(traffic_data, data_file_path):
   with open(data_file_path, "w") as writer:
     writer.write("gitratra_v1\n")
-    for repository_name in data:
+    for repository_name in traffic_data:
       writer.write(">" + repository_name + "\n")
-      repository_data = data[repository_name]
-      for tracked_metric_name in repository_data:
-        writer.write("#" + tracked_metric_name + "\n")
-        tracked_metric = repository_data[tracked_metric_name]
-        for timestamp in tracked_metric:
-          date_str = datetime.strftime(timestamp, '%Y-%m-%d')
-          writer.write(date_str + " ")
-          metrics = tracked_metric[timestamp]
+      repository_data = traffic_data[repository_name]
+      for metric_name in repository_data:
+        writer.write("#" + metric_name + "\n")
+        metric_data = repository_data[metric_name]
+        for timestamp in metric_data:
+          timestamp_str = datetime.strftime(timestamp, '%Y-%m-%d')
+          writer.write(timestamp_str + " ")
+          metrics = metric_data[timestamp]
           writer.write(str(metrics[0]) + " " + str(metrics[1]) + "\n")
 
+"""
+  Several helper functions for navigating into a list
+  of lines
+"""
 def no_more_lines(reader):
   return reader[1] >= len(reader[0])
 
@@ -39,9 +51,12 @@ def read_line(reader):
   reader[1] = reader[1] + 1
   return reader[0][reader[1] - 1][:-1]
 
-def read_tracked_metrics(reader, repository_data):
+""" 
+  Several functions to read Data from a file
+"""
+def read_metric_data(reader, repository_data):
   metrics_name = read_line(reader)[1:]
-  tracked_metrics = {}
+  metric_data = {}
   while (True):
     line = pick_line(reader)
     if (no_more_lines(reader) or line.startswith("#") or line.startswith(">")):
@@ -51,52 +66,38 @@ def read_tracked_metrics(reader, repository_data):
     timestamp = datetime.strptime(split[0], '%Y-%m-%d')
     count = int(split[1])
     uniques = int(split[2])
-    tracked_metrics[timestamp] = [count, uniques]
-  repository_data[metrics_name] = tracked_metrics
+    metric_data[timestamp] = [count, uniques]
+  repository_data[metrics_name] = metric_data
 
-def read_repository_data(reader, data):
+def read_repository_data(reader, traffic_data):
   repository = read_line(reader)[1:]
-  data[repository] = {}
+  traffic_data[repository] = {}
   while (not no_more_lines(reader) and pick_line(reader).startswith("#")):
-    read_tracked_metrics(reader, data[repository])
+    read_metric_data(reader, traffic_data[repository])
 
-def read_data(data_file_path):
-  data = {}
+def read_traffic_data(data_file_path):
+  traffic_data = {}
   lines = open(data_file_path).readlines()
   reader = [lines, 0]
   gitratra_format = read_line(reader)
   assert(gitratra_format == "gitratra_v1")
   while (reader[1] < len(reader[0])):
-    read_repository_data(reader, data)
-  return data  
+    read_repository_data(reader, traffic_data)
+  return traffic_data  
 
-def get_data(data_file_path):
+def get_traffic_data(data_file_path):
   if (not os.path.isfile(data_file_path)):
     return {}
   else:
-    print("File " + data_file_path + " already exists, loading existing tracked metrics...")
-    return read_data(data_file_path)
+    print("File " + data_file_path + " already exists, loading existing traffic data...")
+    return read_traffic_data(data_file_path)
 
 
-def get_db(data_path):
-  if (not os.path.isfile(data_path)):
-    print("File " + data_path + " does not exist yet. A new file will be created")
-    return {}
-  else:
-    with open(data_path, 'rb') as handle:
-      return pickle.load(handle)
-
-def save_db(data_path, db):
-  print("Saving results...")
-  with open(data_path, 'wb') as handle:
-    pickle.dump(db, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
-def print_per_stamp(per_stamp):
-  for stamp in per_stamp:
-    print(str(stamp) + " " + str(per_stamp[stamp]))
-
-
-def update_metric(repo, data, metric_name):
+"""
+  Given a Repository object and a metric name ("view" or "clone"), 
+  update our Data structure with a query to github
+"""
+def update_metric(repo, traffic_data, metric_name):
   metrics = None
   if (metric_name == "views"):
     metrics = repo.get_views_traffic()[metric_name]
@@ -104,41 +105,49 @@ def update_metric(repo, data, metric_name):
     metrics = repo.get_clones_traffic()[metric_name]
   else:
     assert(False)
-  tracked_metrics = data[repo.name][metric_name]
+  metric_data = traffic_data[repo.name][metric_name]
   for metric in metrics: 
     count = metric.count
     uniques = metric.uniques
-    if (metric.timestamp in tracked_metrics):
-      # the 14th day, the number of clones or views given by 
+    if (metric.timestamp in metric_data):
+      # at the 14th oldest timestamp, the number of clones or views given by 
       # GitHub might decrease depending on the hour
       # We don't want to blindly erase,the existing value, but to take 
       # the max.
-      count = max(count, tracked_metrics[metric.timestamp][0])
-      uniques = max(uniques, tracked_metrics[metric.timestamp][1])
+      count = max(count, metric_data[metric.timestamp][0])
+      uniques = max(uniques, metric_data[metric.timestamp][1])
     assert(count >= uniques)
-    tracked_metrics[metric.timestamp] = [count, uniques]
+    metric_data[metric.timestamp] = [count, uniques]
 
-def update_repo(repo, data):
-  if (not repo.name in data):
+"""
+  Given a Repository object, update a Data object with
+  queries to github
+"""
+def update_repo(repo, traffic_data):
+  if (not repo.name in traffic_data):
     print("Adding new repository " + repo.name)
-    data[repo.name] = {}
-    data[repo.name]["clones"] = {}
-    data[repo.name]["views"] = {}
+    traffic_data[repo.name] = {}
+    traffic_data[repo.name]["clones"] = {}
+    traffic_data[repo.name]["views"] = {}
   print("querying current traffic data from " + repo.name + "...")
-  update_metric(repo, data, "clones")
-  update_metric(repo, data, "views")
+  update_metric(repo, traffic_data, "clones")
+  update_metric(repo, traffic_data, "views")
 
-def print_summary(data):
+"""
+  Briefly summarize the traffic information
+  stored in the traffic data
+"""
+def print_summary(traffic_data):
   print("")
-  for repo_name in data:
-    repository_data = data[repo_name]
+  for repo_name in traffic_data:
+    repository_data = traffic_data[repo_name]
     print(repo_name)
     for metric_name in repository_data:
       total_uniques = 0
       total_count = 0
-      tracked_metrics = repository_data[metric_name]
-      for timestamp in tracked_metrics:
-        metrics = tracked_metrics[timestamp]
+      metric_data = repository_data[metric_name]
+      for timestamp in metric_data:
+        metrics = metric_data[timestamp]
         total_count += metrics[0]
         total_uniques += metrics[1]
       print(metric_name + ": " + str(total_count))
@@ -146,7 +155,7 @@ def print_summary(data):
     print("")
 
 
-def get_repositories(repositories_file_path):
+def read_repositories_names(repositories_file_path):
   res = []
   lines = open(repositories_file_path).readlines()
   for line in lines:
@@ -155,36 +164,27 @@ def get_repositories(repositories_file_path):
       res.append(strip)
   return res
 
+"""
+  Main function
+"""
 def run_gitratra(token, data_path, repositories_file_path):
   print("Authentification...")
   g = Github(token)
-  repositories = get_repositories(repositories_file_path)
-  data = get_data(data_path)
+  repositories = read_repositories_names(repositories_file_path)
+  traffic_data = get_traffic_data(data_path)
   for repo_name in repositories:
     repo = g.get_user().get_repo(repo_name)
-    update_repo(repo, data)
-  print_summary(data)
-  write_data(data, data_path)
-
-def print_repository_table(data_path, repository_name):
-  data = get_data(data_path)
-  repository_data = data[repository_name]
-  print("Printing the whole data for repository " + repository_name)
-  for metric_name in repository_data:
-    print(metric_name)
-    metric_data = repository_data[metric_name]
-    for timestamp in metric_data:
-      timestamp_data = metric_data[timestamp]
-      print(str(timestamp) + " count=" + str(timestamp_data[0]) + " uniques=" + str(timestamp_data[1]))
+    update_repo(repo, traffic_data)
+  print_summary(traffic_data)
+  write_data(traffic_data, data_path)
 
 if (__name__== "__main__"):
   if (len(sys.argv) != 4):
     print("Syntax error: python run_generax.py auth_token repositories_list_file output_file.")
     sys.exit(0)
-
-token = sys.argv[1]
-repositories_file_path = sys.argv[2]
-data_path = sys.argv[3]
-run_gitratra(token, data_path, repositories_file_path)
+  token = sys.argv[1]
+  repositories_file_path = sys.argv[2]
+  data_path = sys.argv[3]
+  run_gitratra(token, data_path, repositories_file_path)
 
 
